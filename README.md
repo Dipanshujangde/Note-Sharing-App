@@ -5,13 +5,13 @@ Built as a full-stack TypeScript app: **Next.js (App Router) + Hono.js + MongoDB
 
 ## Tech Stack
 
-| Layer     | Choice                                             |
-|-----------|----------------------------------------------------|
-| Frontend  | Next.js 15 (App Router, Client Components), TypeScript, Tailwind CSS, shadcn/ui-style UI primitives |
-| API       | Hono.js mounted on Next.js Route Handlers (`/api/[[...route]]`) |
-| Database  | MongoDB via Mongoose (connection-cached for serverless) |
-| Auth      | JWT (jose, HS256) in HttpOnly cookie, scrypt-hashed passwords |
-| Validation| zod on every write endpoint                        |
+| Layer      | Choice                                                                                              |
+| ---------- | --------------------------------------------------------------------------------------------------- |
+| Frontend   | Next.js 15 (App Router, Client Components), TypeScript, Tailwind CSS, shadcn/ui-style UI primitives |
+| API        | Hono.js mounted on Next.js Route Handlers (`/api/[[...route]]`)                                     |
+| Database   | MongoDB via Mongoose (connection-cached for serverless)                                             |
+| Auth       | JWT (jose, HS256) in HttpOnly cookie, scrypt-hashed passwords                                       |
+| Validation | zod on every write endpoint                                                                         |
 
 MongoDB is a good fit here: share-link claiming is a single-document atomic operation, which makes the race-condition handling trivial (see below).
 
@@ -37,18 +37,19 @@ No migration step is needed — Mongoose creates collections/indexes lazily (the
 
 ## Pages
 
-| Route         | Purpose                                        |
-|---------------|------------------------------------------------|
-| `/register`   | Create account                                 |
-| `/login`      | Login (HttpOnly JWT cookie)                    |
-| `/notes`      | List my notes (extra convenience page)         |
-| `/notes/new`  | Create note + share link, shows link & key once|
-| `/notes/[id]` | Note detail: view count per link, revoke links |
-| `/share/[token]` | Public/password unlock flow, one-time expiry |
+| Route            | Purpose                                         |
+| ---------------- | ----------------------------------------------- |
+| `/register`      | Create account                                  |
+| `/login`         | Login (HttpOnly JWT cookie)                     |
+| `/notes`         | List my notes (extra convenience page)          |
+| `/notes/new`     | Create note + share link, shows link & key once |
+| `/notes/[id]`    | Note detail: view count per link, revoke links  |
+| `/share/[token]` | Public/password unlock flow, one-time expiry    |
 
 ## Database Schema
 
 ### `users`
+
 ```json
 {
   "name": "string",
@@ -59,6 +60,7 @@ No migration step is needed — Mongoose creates collections/indexes lazily (the
 ```
 
 ### `notes`
+
 ```json
 {
   "ownerId": "ObjectId -> users (indexed)",
@@ -69,21 +71,22 @@ No migration step is needed — Mongoose creates collections/indexes lazily (the
 ```
 
 ### `shares`
+
 ```json
 {
-  "noteId":   "ObjectId -> notes (indexed)",
-  "ownerId":  "ObjectId -> users (indexed)",
-  "token":    "string (unique, indexed) — 192-bit random, base64url",
-  "shareType":"one_time | time_based",
-  "accessType":"public | password",
+  "noteId": "ObjectId -> notes (indexed)",
+  "ownerId": "ObjectId -> users (indexed)",
+  "token": "string (unique, indexed) — 192-bit random, base64url",
+  "shareType": "one_time | time_based",
+  "accessType": "public | password",
   "passwordHash": "scrypt salt:hash (only if password)",
   "expiryAt": "date (required if time_based)",
-  "usedAt":   "date (set on first successful access; one_time)",
-  "revokedAt":"date (set by owner force-invalidate)",
-  "viewCount":"number (default 0)",
+  "usedAt": "date (set on first successful access; one_time)",
+  "revokedAt": "date (set by owner force-invalidate)",
+  "viewCount": "number (default 0)",
   "attempts": "number (failed password attempts)",
   "lockedUntil": "date (brute-force lockout)",
-  "createdAt":"date"
+  "createdAt": "date"
 }
 ```
 
@@ -105,31 +108,33 @@ No migration step is needed — Mongoose creates collections/indexes lazily (the
 ## Expiry Logic
 
 - **Time-based**: `expiryAt` required at creation (zod rejects past dates). Checked at every access: `shareStatus()` short-circuits with `410` before any unlock.
-- **One-time**: expiry is the *first successful unlock*. `usedAt` is set inside the atomic claim; subsequent requests see `used` and get `410 "already been used"`.
+- **One-time**: expiry is the _first successful unlock_. `usedAt` is set inside the atomic claim; subsequent requests see `used` and get `410 "already been used"`.
 
 ## Invalidate / Revoke Logic
 
 `POST /api/shares/:shareId/revoke` (auth required, owner-only):
+
 ```ts
 Share.findOneAndUpdate(
   { _id: shareId, ownerId: session.userId, revokedAt: null },
-  { $set: { revokedAt: new Date() } }
-)
+  { $set: { revokedAt: new Date() } },
+);
 ```
+
 Idempotent (already-revoked → 404). Revoked links return `403` to viewers, and the atomic claim filter includes `revokedAt: null`, so even in-flight requests lose the race.
 
 ## View Count Logic
 
 Increment happens **only** inside the atomic claim:
 
-| Event                     | viewCount |
-|---------------------------|-----------|
-| Public view               | +1        |
-| Successful password unlock| +1        |
-| Wrong password            | unchanged (+1 `attempts`) |
-| Expired link              | unchanged (410, before claim) |
-| Revoked link              | unchanged (403, before claim) |
-| One-time already used     | unchanged (410, before claim) |
+| Event                      | viewCount                     |
+| -------------------------- | ----------------------------- |
+| Public view                | +1                            |
+| Successful password unlock | +1                            |
+| Wrong password             | unchanged (+1 `attempts`)     |
+| Expired link               | unchanged (410, before claim) |
+| Revoked link               | unchanged (403, before claim) |
+| One-time already used      | unchanged (410, before claim) |
 
 `$inc: { viewCount: 1 }` is atomic at the MongoDB document level — concurrent increments never lose updates.
 
@@ -139,9 +144,9 @@ The one-time claim is a single atomic find-and-modify with a guard that only mat
 
 ```ts
 const claimed = await Share.findOneAndUpdate(
-  { _id: share._id, revokedAt: null, usedAt: null },   // guard
+  { _id: share._id, revokedAt: null, usedAt: null }, // guard
   { $set: { usedAt: new Date() }, $inc: { viewCount: 1 } },
-  { new: true }
+  { new: true },
 );
 if (!claimed) return 410; // someone else won the race
 ```
@@ -167,6 +172,7 @@ The claim is a single atomic `findOneAndUpdate` guarded by `usedAt: null` (plus 
 `$inc: { viewCount: 1 }` inside the same atomic claim operation. `$inc` is atomic per document in MongoDB, so concurrent successful unlocks serialize on the document — no lost updates, and the count can only change together with a legitimate claim (wrong passwords, expired/revoked links return before the claim stage).
 
 **3. How would this work if 1 million people opened the link?**
+
 - A one-time link still grants exactly 1 view: 1 winner, 999,999 get `410` — the atomic claim is O(1) on an indexed unique `_id`.
 - Hot-document contention on one link is bounded by MongoDB's per-document write serialization; for extreme fan-out you'd shard by share `_id` (MongoDB shard key), add a caching layer (Redis) for the status/metadata endpoint (immutable until claimed), rate-limit `/unlock` per IP, and serve static note content via CDN after first claim. The design itself (token-indexed lookups, atomic ops) needs no algorithmic change to scale.
 - For time-based public links, reads are cheap indexed lookups and writes are single `$inc`s; horizontal scaling = more app replicas (stateless JWT) + read replicas, since view counts tolerate brief replication lag.
@@ -187,5 +193,3 @@ Three layers: (a) **lockout** — 5 failed attempts locks the link for 5 minutes
 9. Open an **invalid** token URL → 404 message.
 10. From `/notes/[id]`, hit **Revoke** → open link → **revoked** message.
 11. Show view counts on the owner's note page (public +1, unlock +1, wrong password +0, expired/revoked +0).
-#   N o t e - S h a r i n g - A p p  
- 
